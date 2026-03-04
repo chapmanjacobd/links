@@ -11,6 +11,7 @@ import (
 	"os/exec"
 	"regexp"
 	"runtime"
+	"sort"
 	"strings"
 	"time"
 
@@ -31,10 +32,12 @@ type AddCmd struct {
 }
 
 type OpenCmd struct {
-	DBPath   string   `help:"Database path" default:"links.db" type:"path"`
-	Category string   `help:"Filter by category" short:"c"`
-	Limit    int      `help:"Limit number of links to open" default:"1" short:"L"`
-	Search   []string `arg:"" help:"Search terms" optional:""`
+	DBPath         string   `help:"Database path" default:"links.db" type:"path"`
+	Category       string   `help:"Filter by category" short:"c"`
+	Limit          int      `help:"Limit number of links to open" default:"1" short:"L"`
+	MaxSameDomain  int      `help:"Limit to N tabs per domain" short:"m"`
+	RegexSort      []string `help:"Regex sort patterns" short:"r"`
+	Search         []string `arg:"" help:"Search terms" optional:""`
 }
 
 var CLI struct {
@@ -231,6 +234,14 @@ func (o *OpenCmd) Run() error {
 
 	filtered := filterMedia(allMedia, o.Search)
 
+	if len(o.RegexSort) > 0 {
+		filtered = regexSort(filtered, o.RegexSort)
+	}
+
+	if o.MaxSameDomain > 0 {
+		filtered = filterMaxSameDomain(filtered, o.MaxSameDomain)
+	}
+
 	if len(filtered) > o.Limit {
 		filtered = filtered[:o.Limit]
 	}
@@ -249,6 +260,62 @@ func (o *OpenCmd) Run() error {
 	}
 
 	return nil
+}
+
+func filterMaxSameDomain(media []Media, max int) []Media {
+	counts := make(map[string]int)
+	var filtered []Media
+	for _, m := range media {
+		domain := m.Hostname
+		if domain == "" {
+			u, err := url.Parse(m.Path)
+			if err == nil {
+				domain = u.Hostname()
+			}
+		}
+		if counts[domain] < max {
+			filtered = append(filtered, m)
+			counts[domain]++
+		}
+	}
+	return filtered
+}
+
+func regexSort(media []Media, patterns []string) []Media {
+	var regexs []*regexp.Regexp
+	for _, p := range patterns {
+		re, err := regexp.Compile(p)
+		if err != nil {
+			log.Printf("Invalid regex %s: %v", p, err)
+			continue
+		}
+		regexs = append(regexs, re)
+	}
+
+	type mediaWithKey struct {
+		m   Media
+		key string
+	}
+
+	keyed := make([]mediaWithKey, len(media))
+	for i, m := range media {
+		var keys []string
+		for _, re := range regexs {
+			matches := re.FindAllString(m.Path, -1)
+			keys = append(keys, strings.Join(matches, ""))
+		}
+		keyed[i] = mediaWithKey{m, strings.Join(keys, "|")}
+	}
+
+	sort.SliceStable(keyed, func(i, j int) bool {
+		return keyed[i].key < keyed[j].key
+	})
+
+	result := make([]Media, len(media))
+	for i, k := range keyed {
+		result[i] = k.m
+	}
+	return result
 }
 
 func filterMedia(media []Media, search []string) []Media {
