@@ -32,12 +32,13 @@ type AddCmd struct {
 }
 
 type OpenCmd struct {
-	DBPath        string   `help:"Database path" default:"links.db" type:"path"`
-	Category      string   `help:"Filter by category" short:"c"`
-	Limit         int      `help:"Limit number of links to open" default:"1" short:"L"`
-	MaxSameDomain int      `help:"Limit to N tabs per domain" short:"m"`
-	RegexSort     []string `help:"Regex sort patterns" short:"r"`
-	Search        []string `arg:"" help:"Search terms" optional:""`
+	DBPath         string   `help:"Database path" default:"links.db" type:"path"`
+	Category       string   `help:"Filter by category" short:"c"`
+	Limit          int      `help:"Limit number of links to open" default:"1" short:"L"`
+	MaxSameDomain  int      `help:"Limit to N tabs per domain" short:"m"`
+	RegexSort      []string `help:"Regex sort patterns" short:"r"`
+	DeleteRows     bool     `help:"Delete matching rows instead of opening them" short:"D"`
+	Search         []string `arg:"" help:"Search terms" optional:""`
 }
 
 var CLI struct {
@@ -248,6 +249,18 @@ func (o *OpenCmd) Run() error {
 
 	if len(filtered) == 0 {
 		fmt.Println("No links found")
+		return nil
+	}
+
+	if o.DeleteRows {
+		for _, m := range filtered {
+			fmt.Printf("Deleting: %s\n", m.Path)
+			_, _ = db.Exec("DELETE FROM history WHERE media_id = ?", m.ID)
+			_, err = db.Exec("DELETE FROM media WHERE id = ?", m.ID)
+			if err != nil {
+				log.Printf("Error deleting row %d: %v", m.ID, err)
+			}
+		}
 		return nil
 	}
 
