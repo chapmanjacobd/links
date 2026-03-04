@@ -1,4 +1,4 @@
-module github.com/xk/links
+module github.com/chapmanjacobd/links
 
 go 1.25.0
 

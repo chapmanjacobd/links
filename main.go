@@ -207,7 +207,7 @@ func (o *OpenCmd) Run() error {
 	defer db.Close()
 
 	query := "SELECT id, path, hostname, COALESCE(category, '') FROM media WHERE time_deleted = 0 AND id NOT IN (SELECT media_id FROM history)"
-	args := []interface{}{}
+	args := []any{}
 	if o.Category != "" {
 		query += " AND category = ?"
 		args = append(args, o.Category)
