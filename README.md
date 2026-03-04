@@ -10,7 +10,15 @@ A Go-based port of `xklb` bookmarking and link-related tools.
 ## Installation
 
 ```bash
-go build -o links main.go
+go install github.com/chapmanjacobd/links
+```
+
+or
+
+```bash
+git clone https://github.com/chapmanjacobd/links/
+cd links
+make install
 ```
 
 ## Usage

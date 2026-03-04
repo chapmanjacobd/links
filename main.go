@@ -32,13 +32,13 @@ type AddCmd struct {
 }
 
 type OpenCmd struct {
-	DBPath         string   `help:"Database path" default:"links.db" type:"path"`
-	Category       string   `help:"Filter by category" short:"c"`
-	Limit          int      `help:"Limit number of links to open" default:"1" short:"L"`
-	MaxSameDomain  int      `help:"Limit to N tabs per domain" short:"m"`
-	RegexSort      []string `help:"Regex sort patterns" short:"r"`
-	DeleteRows     bool     `help:"Delete matching rows instead of opening them" short:"D"`
-	Search         []string `arg:"" help:"Search terms" optional:""`
+	DBPath        string   `help:"Database path" default:"links.db" type:"path"`
+	Category      string   `help:"Filter by category" short:"c"`
+	Limit         int      `help:"Limit number of links to open" default:"1" short:"L"`
+	MaxSameDomain int      `help:"Limit to N tabs per domain" short:"m"`
+	RegexSort     []string `help:"Regex sort patterns" short:"r"`
+	DeleteRows    bool     `help:"Delete matching rows instead of opening them" short:"D"`
+	Search        []string `arg:"" help:"Search terms" optional:""`
 }
 
 var CLI struct {
