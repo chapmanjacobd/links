@@ -32,12 +32,12 @@ type AddCmd struct {
 }
 
 type OpenCmd struct {
-	DBPath         string   `help:"Database path" default:"links.db" type:"path"`
-	Category       string   `help:"Filter by category" short:"c"`
-	Limit          int      `help:"Limit number of links to open" default:"1" short:"L"`
-	MaxSameDomain  int      `help:"Limit to N tabs per domain" short:"m"`
-	RegexSort      []string `help:"Regex sort patterns" short:"r"`
-	Search         []string `arg:"" help:"Search terms" optional:""`
+	DBPath        string   `help:"Database path" default:"links.db" type:"path"`
+	Category      string   `help:"Filter by category" short:"c"`
+	Limit         int      `help:"Limit number of links to open" default:"1" short:"L"`
+	MaxSameDomain int      `help:"Limit to N tabs per domain" short:"m"`
+	RegexSort     []string `help:"Regex sort patterns" short:"r"`
+	Search        []string `arg:"" help:"Search terms" optional:""`
 }
 
 var CLI struct {
@@ -283,39 +283,89 @@ func filterMaxSameDomain(media []Media, max int) []Media {
 
 func regexSort(media []Media, patterns []string) []Media {
 	var regexs []*regexp.Regexp
-	for _, p := range patterns {
-		re, err := regexp.Compile(p)
-		if err != nil {
-			log.Printf("Invalid regex %s: %v", p, err)
-			continue
+	if len(patterns) == 0 {
+		regexs = append(regexs, regexp.MustCompile(`\b\w\w+\b`))
+	} else {
+		for _, p := range patterns {
+			re, err := regexp.Compile(p)
+			if err != nil {
+				log.Printf("Invalid regex %s: %v", p, err)
+				continue
+			}
+			regexs = append(regexs, re)
 		}
-		regexs = append(regexs, re)
 	}
 
-	type mediaWithKey struct {
-		m   Media
-		key string
-	}
-
-	keyed := make([]mediaWithKey, len(media))
+	corpus := make([][]string, len(media))
 	for i, m := range media {
-		var keys []string
-		for _, re := range regexs {
-			matches := re.FindAllString(m.Path, -1)
-			keys = append(keys, strings.Join(matches, ""))
-		}
-		keyed[i] = mediaWithKey{m, strings.Join(keys, "|")}
+		// Remove protocol for processing
+		processedPath := strings.TrimPrefix(m.Path, "http://")
+		processedPath = strings.TrimPrefix(processedPath, "https://")
+
+		corpus[i] = lineSplitter(regexs, processedPath)
 	}
 
-	sort.SliceStable(keyed, func(i, j int) bool {
-		return keyed[i].key < keyed[j].key
+	corpusStats := make(map[string]int)
+	for _, words := range corpus {
+		for _, word := range words {
+			corpusStats[strings.ToLower(word)]++
+		}
+	}
+
+	type mediaInfo struct {
+		m        Media
+		words    []string
+		dupCount int
+	}
+
+	infos := make([]mediaInfo, len(media))
+	for i, m := range media {
+		dupCount := 0
+		for _, w := range corpus[i] {
+			if corpusStats[strings.ToLower(w)] > 1 {
+				dupCount++
+			}
+		}
+		infos[i] = mediaInfo{m, corpus[i], dupCount}
+	}
+
+	sort.SliceStable(infos, func(i, j int) bool {
+		// 1. Number of duplicate words (descending)
+		if infos[i].dupCount != infos[j].dupCount {
+			return infos[i].dupCount > infos[j].dupCount
+		}
+
+		// 2. Concatenated words (ascending, case-insensitive)
+		w1 := strings.ToLower(strings.Join(infos[i].words, ""))
+		w2 := strings.ToLower(strings.Join(infos[j].words, ""))
+		if w1 != w2 {
+			return w1 < w2
+		}
+
+		// 3. Original path (ascending, case-insensitive)
+		return strings.ToLower(infos[i].m.Path) < strings.ToLower(infos[j].m.Path)
 	})
 
 	result := make([]Media, len(media))
-	for i, k := range keyed {
-		result[i] = k.m
+	for i, info := range infos {
+		result[i] = info.m
 	}
 	return result
+}
+
+func lineSplitter(regexs []*regexp.Regexp, line string) []string {
+	words := []string{line}
+	for _, rgx := range regexs {
+		var newWords []string
+		for _, word := range words {
+			matches := rgx.FindAllString(word, -1)
+			if matches != nil {
+				newWords = append(newWords, matches...)
+			}
+		}
+		words = newWords
+	}
+	return words
 }
 
 func filterMedia(media []Media, search []string) []Media {
