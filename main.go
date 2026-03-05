@@ -20,7 +20,7 @@ import (
 )
 
 type AddCmd struct {
-	DBPath      string   `help:"Database path" default:"links.db" type:"path"`
+	DBPath      string   `help:"Database path" default:"links.db" type:"path" aliases:"db"`
 	Category    string   `help:"Category" short:"c"`
 	NoExtract   bool     `help:"Do not extract links from the provided URLs" short:"n"`
 	PageKey     string   `help:"Page key" default:"page"`
@@ -32,11 +32,12 @@ type AddCmd struct {
 }
 
 type OpenCmd struct {
-	DBPath        string   `help:"Database path" default:"links.db" type:"path"`
+	DBPath        string   `help:"Database path" default:"links.db" type:"path" aliases:"db"`
 	Category      string   `help:"Filter by category" short:"c"`
 	Limit         int      `help:"Limit number of links to open" default:"1" short:"L"`
 	MaxSameDomain int      `help:"Limit to N tabs per domain" short:"m"`
-	RegexSort     []string `help:"Regex sort patterns" short:"r"`
+	RegexSort     bool     `help:"Enable regex sort" short:"R"`
+	RegexPatterns []string `help:"Custom regex patterns" short:"r"`
 	DeleteRows    bool     `help:"Delete matching rows instead of opening them" short:"D"`
 	Search        []string `arg:"" help:"Search terms" optional:""`
 }
@@ -152,6 +153,11 @@ func setPage(inputURL, pageKey string, pageNum int, pageReplace string) string {
 }
 
 func addLink(db *sql.DB, link, category string) error {
+	link = normalizeURL(link)
+	if link == "" {
+		return nil
+	}
+
 	u, err := url.Parse(link)
 	hostname := ""
 	if err == nil {
@@ -165,6 +171,15 @@ func addLink(db *sql.DB, link, category string) error {
 			category = COALESCE(NULLIF(?, ''), category)
 	`, link, hostname, category, time.Now().Unix(), category)
 	return err
+}
+
+func normalizeURL(s string) string {
+	s = strings.TrimSpace(s)
+	if s == "" {
+		return ""
+	}
+	// Remove trailing slash
+	return strings.TrimSuffix(s, "/")
 }
 
 var linkRegex = regexp.MustCompile(`(?i)href=["'](https?://[^"']+)["']`)
@@ -186,8 +201,8 @@ func extractLinks(pageURL string) ([]string, error) {
 	seen := make(map[string]bool)
 
 	for _, m := range matches {
-		link := m[1]
-		if !seen[link] {
+		link := normalizeURL(m[1])
+		if link != "" && !seen[link] {
 			links = append(links, link)
 			seen[link] = true
 		}
@@ -235,8 +250,8 @@ func (o *OpenCmd) Run() error {
 
 	filtered := filterMedia(allMedia, o.Search)
 
-	if len(o.RegexSort) > 0 {
-		filtered = regexSort(filtered, o.RegexSort)
+	if o.RegexSort || len(o.RegexPatterns) > 0 {
+		filtered = regexSort(filtered, o.RegexPatterns)
 	}
 
 	if o.MaxSameDomain > 0 {
@@ -311,10 +326,8 @@ func regexSort(media []Media, patterns []string) []Media {
 
 	corpus := make([][]string, len(media))
 	for i, m := range media {
-		// Remove protocol for processing
 		processedPath := strings.TrimPrefix(m.Path, "http://")
 		processedPath = strings.TrimPrefix(processedPath, "https://")
-
 		corpus[i] = lineSplitter(regexs, processedPath)
 	}
 
@@ -326,36 +339,46 @@ func regexSort(media []Media, patterns []string) []Media {
 	}
 
 	type mediaInfo struct {
-		m        Media
-		words    []string
-		dupCount int
+		m         Media
+		words     []string
+		allUnique bool
+		allDup    bool
 	}
 
 	infos := make([]mediaInfo, len(media))
 	for i, m := range media {
-		dupCount := 0
+		allUnique := len(corpus[i]) > 0
+		allDup := len(corpus[i]) > 0
 		for _, w := range corpus[i] {
-			if corpusStats[strings.ToLower(w)] > 1 {
-				dupCount++
+			count := corpusStats[strings.ToLower(w)]
+			if count > 1 {
+				allUnique = false
+			} else {
+				allDup = false
 			}
 		}
-		infos[i] = mediaInfo{m, corpus[i], dupCount}
+		infos[i] = mediaInfo{m, corpus[i], allUnique, allDup}
 	}
 
 	sort.SliceStable(infos, func(i, j int) bool {
-		// 1. Number of duplicate words (descending)
-		if infos[i].dupCount != infos[j].dupCount {
-			return infos[i].dupCount > infos[j].dupCount
+		// 1. -allunique (lines that are NOT all unique come first)
+		if infos[i].allUnique != infos[j].allUnique {
+			return !infos[i].allUnique && infos[j].allUnique
 		}
 
-		// 2. Concatenated words (ascending, case-insensitive)
-		w1 := strings.ToLower(strings.Join(infos[i].words, ""))
-		w2 := strings.ToLower(strings.Join(infos[j].words, ""))
+		// 2. alldup (lines that ARE all duplicates come first)
+		if infos[i].allDup != infos[j].allDup {
+			return infos[i].allDup && !infos[j].allDup
+		}
+
+		// 3. alpha (alphabetical sort of words)
+		w1 := strings.ToLower(strings.Join(infos[i].words, " "))
+		w2 := strings.ToLower(strings.Join(infos[j].words, " "))
 		if w1 != w2 {
 			return w1 < w2
 		}
 
-		// 3. Original path (ascending, case-insensitive)
+		// 4. line (original path)
 		return strings.ToLower(infos[i].m.Path) < strings.ToLower(infos[j].m.Path)
 	})
 

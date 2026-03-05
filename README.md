@@ -52,19 +52,21 @@ Paging:
 ### Opening Links
 
 Open the most recent link matching a search term:
-
 ```bash
 ./links open google
 ```
 
-Open multiple links:
+Enable default regex sort:
+```bash
+./links open -R google
+```
 
+Open multiple links:
 ```bash
 ./links open -L 5 tech
 ```
 
 Filter by category:
-
 ```bash
 ./links open -c tech
 ```

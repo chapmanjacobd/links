@@ -13,7 +13,7 @@ func TestRegexSort(t *testing.T) {
 		expected []string
 	}{
 		{
-			name: "BasicDupSort",
+			name: "BasicSortWithDups",
 			media: []Media{
 				{Path: "red apple"},
 				{Path: "broccoli"},
@@ -24,13 +24,25 @@ func TestRegexSort(t *testing.T) {
 			},
 			patterns: nil, // Default regex \b\w\w+\b
 			// Word corpus counts: red:2, apple:3, broccoli:1, yellow:1, green:1, orange:1
-			// "red apple": 2 dups (red, apple)
-			// "broccoli": 0 dups
-			// "yellow": 0 dups
-			// "green": 0 dups
-			// "orange apple": 1 dup (apple)
-			// "red apple": 2 dups (red, apple)
-			// Order by dups desc: "red apple", "red apple", "orange apple", "broccoli", "green", "yellow"
+			// "red apple": [red, apple] - allUnique: false, alpha: "red apple", allDup: true
+			// "broccoli": [broccoli] - allUnique: true, alpha: "broccoli", allDup: false
+			// "yellow": [yellow] - allUnique: true, alpha: "yellow", allDup: false
+			// "green": [green] - allUnique: true, alpha: "green", allDup: false
+			// "orange apple": [orange, apple] - allUnique: false, alpha: "orange apple", allDup: false
+			// "red apple": [red, apple] - allUnique: false, alpha: "red apple", allDup: true
+			//
+			// 1. -allUnique: red apple, orange apple, red apple come first
+			// 2. alpha:
+			//    - orange apple
+			//    - red apple
+			//    - red apple
+			// 3. alldup:
+			//    - red apple (true)
+			//    - red apple (true)
+			//    - orange apple (false)
+			//
+			// Final result for first group: red apple, red apple, orange apple
+			// Second group (-allUnique is false): broccoli, green, yellow
 			expected: []string{
 				"red apple",
 				"red apple",
@@ -48,12 +60,16 @@ func TestRegexSort(t *testing.T) {
 				{Path: "https://example.com/a/5"},
 			},
 			patterns: []string{`[ab]`, `\d+`},
-			// a/10 -> [a, 10] -> dups: 0? No, let's look at counts.
-			// a:2, b:1, 10:1, 2:1, 5:1
-			// "a/10": 1 dup (a)
-			// "b/2": 0 dups
-			// "a/5": 1 dup (a)
-			// Order: a/10, a/5, b/2 (a/10 vs a/5 sorted by path since dups and joined words are same)
+			// a/10 -> [a, 10]
+			// b/2 -> [b, 2]
+			// a/5 -> [a, 5]
+			// Counts: a:2, 10:1, b:1, 2:1, 5:1
+			// "a/10": allUnique: false, alpha: "a 10", allDup: false
+			// "b/2": allUnique: true, alpha: "b 2", allDup: false
+			// "a/5": allUnique: false, alpha: "a 5", allDup: false
+			//
+			// 1. -allUnique: a/10, a/5 come first
+			// 2. alpha: "a 10" vs "a 5" -> "a 10" < "a 5"
 			expected: []string{
 				"https://example.com/a/10",
 				"https://example.com/a/5",
@@ -73,6 +89,26 @@ func TestRegexSort(t *testing.T) {
 				t.Errorf("regexSort() = %v, want %v", paths, tt.expected)
 			}
 		})
+	}
+}
+
+func TestNormalizeURL(t *testing.T) {
+	tests := []struct {
+		input    string
+		expected string
+	}{
+		{"https://google.com/", "https://google.com"},
+		{"https://google.com", "https://google.com"},
+		{"  https://google.com/  ", "https://google.com"},
+		{"https://example.com/path/", "https://example.com/path"},
+		{"", ""},
+	}
+
+	for _, tt := range tests {
+		result := normalizeURL(tt.input)
+		if result != tt.expected {
+			t.Errorf("normalizeURL(%q) = %q, want %q", tt.input, result, tt.expected)
+		}
 	}
 }
 
