@@ -38,7 +38,8 @@ type OpenCmd struct {
 	MaxSameDomain int      `help:"Limit to N tabs per domain" short:"m"`
 	RegexSort     bool     `help:"Enable regex sort" short:"R"`
 	RegexPatterns []string `help:"Custom regex patterns" short:"r"`
-	DeleteRows    bool     `help:"Delete matching rows instead of opening them" short:"D"`
+	DeleteRows    bool     `help:"Delete matching rows instead of opening them"`
+	Prefix        string   `help:"Prefix for non-URL paths" default:"https://duckduckgo.com/?q="`
 	Search        []string `arg:"" help:"Search terms" optional:""`
 }
 
@@ -280,8 +281,12 @@ func (o *OpenCmd) Run() error {
 	}
 
 	for _, m := range filtered {
-		fmt.Printf("Opening: %s\n", m.Path)
-		if err := openBrowser(m.Path); err != nil {
+		urlToOpen := m.Path
+		if !strings.HasPrefix(m.Path, "http") {
+			urlToOpen = o.Prefix + url.QueryEscape(m.Path)
+		}
+		fmt.Printf("%s\n", urlToOpen)
+		if err := openBrowser(urlToOpen); err != nil {
 			log.Printf("Error opening browser: %v", err)
 		}
 		_, _ = db.Exec("INSERT INTO history (media_id, time_played) VALUES (?, ?)", m.ID, time.Now().Unix())
