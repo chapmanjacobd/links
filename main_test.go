@@ -3,10 +3,14 @@ package main
 import (
 	"bytes"
 	"database/sql"
+	"fmt"
+	"net/http"
+	"net/http/httptest"
 	"path/filepath"
 	"reflect"
 	"runtime"
 	"testing"
+	"time"
 )
 
 func TestRegexSort(t *testing.T) {
@@ -114,6 +118,113 @@ func TestNormalizeURL(t *testing.T) {
 			t.Errorf("normalizeURL(%q) = %q, want %q", tt.input, result, tt.expected)
 		}
 	}
+}
+
+func TestSetPage(t *testing.T) {
+	tests := []struct {
+		name        string
+		inputURL    string
+		pageKey     string
+		pageNum     int
+		pageReplace string
+		expected    string
+	}{
+		{
+			name:     "AddsQueryParameter",
+			inputURL: "https://example.com/search?q=go",
+			pageKey:  "page",
+			pageNum:  2,
+			expected: "https://example.com/search?page=2&q=go",
+		},
+		{
+			name:        "ReplacesPlaceholder",
+			inputURL:    "https://example.com/page/{n}",
+			pageKey:     "page",
+			pageNum:     3,
+			pageReplace: "{n}",
+			expected:    "https://example.com/page/3",
+		},
+		{
+			name:     "LeavesInvalidURLUnchanged",
+			inputURL: "://bad url",
+			pageKey:  "page",
+			pageNum:  1,
+			expected: "://bad url",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := setPage(tt.inputURL, tt.pageKey, tt.pageNum, tt.pageReplace); got != tt.expected {
+				t.Fatalf("setPage() = %q, want %q", got, tt.expected)
+			}
+		})
+	}
+}
+
+func TestExtractLinks(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/page":
+			w.Header().Set("Content-Type", "text/html; charset=utf-8")
+			fmt.Fprintf(w, `<html><head><base href="/base/"></head><body>
+					<a href="relative/">relative</a>
+					<a href="relative/">duplicate</a>
+					<a href="child/two?x=1#fragment">child</a>
+					<a href="//example.org/cdn/">protocol-relative</a>
+					<a href="https://other.example.com/path/">absolute</a>
+					<a href="mailto:test@example.com">mailto</a>
+					<a href="javascript:void(0)">javascript</a>
+					<a href="#section">fragment</a>
+				</body></html>`)
+		case "/bad-status":
+			w.Header().Set("Content-Type", "text/html")
+			http.Error(w, "nope", http.StatusBadGateway)
+		case "/not-html":
+			w.Header().Set("Content-Type", "application/json")
+			fmt.Fprint(w, `{"ok":true}`)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+
+	oldClient := httpClient
+	client := server.Client()
+	client.Timeout = time.Second
+	httpClient = client
+	defer func() { httpClient = oldClient }()
+
+	t.Run("ResolvesRelativeURLs", func(t *testing.T) {
+		got, err := extractLinks(server.URL + "/page")
+		if err != nil {
+			t.Fatalf("extractLinks() error = %v", err)
+		}
+
+		expected := []string{
+			server.URL + "/base/relative",
+			server.URL + "/base/child/two?x=1",
+			"http://example.org/cdn",
+			"https://other.example.com/path",
+		}
+		if !reflect.DeepEqual(got, expected) {
+			t.Fatalf("extractLinks() = %v, want %v", got, expected)
+		}
+	})
+
+	t.Run("RejectsBadStatus", func(t *testing.T) {
+		_, err := extractLinks(server.URL + "/bad-status")
+		if err == nil || err.Error() != "unexpected status code: 502 Bad Gateway" {
+			t.Fatalf("extractLinks() error = %v, want %q", err, "unexpected status code: 502 Bad Gateway")
+		}
+	})
+
+	t.Run("RejectsNonHTML", func(t *testing.T) {
+		_, err := extractLinks(server.URL + "/not-html")
+		if err == nil || err.Error() != "unexpected content type: application/json" {
+			t.Fatalf("extractLinks() error = %v, want %q", err, "unexpected content type: application/json")
+		}
+	})
 }
 
 func TestFilterMaxSameDomain(t *testing.T) {
@@ -315,6 +426,125 @@ func TestOpenCmdRunNoMarkWatched(t *testing.T) {
 	}
 }
 
+func TestOpenCmdRunDeleteModesConflict(t *testing.T) {
+	cmd := OpenCmd{
+		DeleteRows:  true,
+		MarkDeleted: true,
+	}
+
+	err := cmd.Run()
+	if err == nil || err.Error() != "--delete-rows and --mark-deleted cannot be used together" {
+		t.Fatalf("OpenCmd.Run() error = %v, want %q", err, "--delete-rows and --mark-deleted cannot be used together")
+	}
+}
+
+func TestOpenCmdRunMarkDeleted(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "links.db")
+	db := mustInitDB(t, dbPath)
+	if err := addLink(db, "https://example.com", ""); err != nil {
+		t.Fatalf("addLink() error = %v", err)
+	}
+	db.Close()
+
+	var output bytes.Buffer
+	oldStdout := stdout
+	stdout = &output
+	defer func() { stdout = oldStdout }()
+
+	oldStartProcess := startProcess
+	startProcess = func(cmd string, args ...string) error {
+		t.Fatalf("startProcess(%q, %v) should not have been called", cmd, args)
+		return nil
+	}
+	defer func() { startProcess = oldStartProcess }()
+
+	cmd := OpenCmd{
+		DBPath:      dbPath,
+		Limit:       1,
+		MarkDeleted: true,
+		NoBrowser:   true,
+		Search:      []string{"example"},
+	}
+	if err := cmd.Run(); err != nil {
+		t.Fatalf("OpenCmd.Run() error = %v", err)
+	}
+
+	if output.String() != "Marking deleted: https://example.com\n" {
+		t.Fatalf("printed output = %q, want %q", output.String(), "Marking deleted: https://example.com\n")
+	}
+
+	db = mustInitDB(t, dbPath)
+	defer db.Close()
+	if got := mediaCount(t, db, "https://example.com"); got != 1 {
+		t.Fatalf("media count = %d, want 1", got)
+	}
+	if deletedAt := mediaDeletedAt(t, db, "https://example.com"); deletedAt == 0 {
+		t.Fatalf("time_deleted = %d, want non-zero", deletedAt)
+	}
+	if got := historyCount(t, db); got != 0 {
+		t.Fatalf("history count = %d, want 0", got)
+	}
+
+	output.Reset()
+	cmd = OpenCmd{
+		DBPath:    dbPath,
+		Limit:     1,
+		NoBrowser: true,
+		Search:    []string{"example"},
+	}
+	if err := cmd.Run(); err != nil {
+		t.Fatalf("OpenCmd.Run() error = %v", err)
+	}
+	if output.String() != "No links found\n" {
+		t.Fatalf("printed output = %q, want %q", output.String(), "No links found\n")
+	}
+}
+
+func TestOpenCmdRunDeleteRows(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "links.db")
+	db := mustInitDB(t, dbPath)
+	if err := addLink(db, "https://example.com", ""); err != nil {
+		t.Fatalf("addLink() error = %v", err)
+	}
+	db.Close()
+
+	var output bytes.Buffer
+	oldStdout := stdout
+	stdout = &output
+	defer func() { stdout = oldStdout }()
+
+	oldStartProcess := startProcess
+	startProcess = func(cmd string, args ...string) error {
+		t.Fatalf("startProcess(%q, %v) should not have been called", cmd, args)
+		return nil
+	}
+	defer func() { startProcess = oldStartProcess }()
+
+	cmd := OpenCmd{
+		DBPath:     dbPath,
+		Limit:      1,
+		DeleteRows: true,
+		NoBrowser:  true,
+		Search:     []string{"example"},
+	}
+	if err := cmd.Run(); err != nil {
+		t.Fatalf("OpenCmd.Run() error = %v", err)
+	}
+
+	if output.String() != "Deleting: https://example.com\n" {
+		t.Fatalf("printed output = %q, want %q", output.String(), "Deleting: https://example.com\n")
+	}
+
+	db = mustInitDB(t, dbPath)
+	defer db.Close()
+	if got := mediaCount(t, db, "https://example.com"); got != 0 {
+		t.Fatalf("media count = %d, want 0", got)
+	}
+	if got := historyCount(t, db); got != 0 {
+		t.Fatalf("history count = %d, want 0", got)
+	}
+}
+
 func mustInitDB(t *testing.T, dbPath string) *sql.DB {
 	t.Helper()
 
@@ -333,4 +563,24 @@ func historyCount(t *testing.T, db *sql.DB) int {
 		t.Fatalf("history count query error = %v", err)
 	}
 	return count
+}
+
+func mediaCount(t *testing.T, db *sql.DB, path string) int {
+	t.Helper()
+
+	var count int
+	if err := db.QueryRow("SELECT COUNT(*) FROM media WHERE path = ?", path).Scan(&count); err != nil {
+		t.Fatalf("media count query error = %v", err)
+	}
+	return count
+}
+
+func mediaDeletedAt(t *testing.T, db *sql.DB, path string) int64 {
+	t.Helper()
+
+	var deletedAt int64
+	if err := db.QueryRow("SELECT time_deleted FROM media WHERE path = ?", path).Scan(&deletedAt); err != nil {
+		t.Fatalf("time_deleted query error = %v", err)
+	}
+	return deletedAt
 }

@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"mime"
 	"net/http"
 	"net/url"
 	"os"
@@ -17,6 +18,7 @@ import (
 
 	"github.com/alecthomas/kong"
 	_ "github.com/mattn/go-sqlite3"
+	"golang.org/x/net/html"
 )
 
 type AddCmd struct {
@@ -38,7 +40,8 @@ type OpenCmd struct {
 	MaxSameDomain int      `help:"Limit to N tabs per domain" short:"m"`
 	RegexSort     bool     `help:"Enable regex sort" short:"R"`
 	RegexPatterns []string `help:"Custom regex patterns" short:"r"`
-	DeleteRows    bool     `help:"Delete matching rows instead of opening them"`
+	DeleteRows    bool     `help:"Hard delete matching rows instead of opening them"`
+	MarkDeleted   bool     `help:"Soft delete matching rows instead of opening them"`
 	Browser       string   `help:"Browser command override"`
 	NoBrowser     bool     `help:"Only print matching links; do not open them"`
 	NoMarkWatched bool     `help:"Do not mark printed or opened links as seen"`
@@ -169,11 +172,13 @@ func addLink(db *sql.DB, link, category string) error {
 	}
 
 	_, err = db.Exec(`
-		INSERT INTO media (path, hostname, category, time_created)
-		VALUES (?, ?, ?, ?)
+		INSERT INTO media (path, hostname, category, time_created, time_deleted)
+		VALUES (?, ?, ?, ?, 0)
 		ON CONFLICT(path) DO UPDATE SET
-			category = COALESCE(NULLIF(?, ''), category)
-	`, link, hostname, category, time.Now().Unix(), category)
+			hostname = excluded.hostname,
+			category = COALESCE(NULLIF(excluded.category, ''), media.category),
+			time_deleted = 0
+	`, link, hostname, category, time.Now().Unix())
 	return err
 }
 
@@ -186,33 +191,148 @@ func normalizeURL(s string) string {
 	return strings.TrimSuffix(s, "/")
 }
 
-var linkRegex = regexp.MustCompile(`(?i)href=["'](https?://[^"']+)["']`)
+var httpClient = &http.Client{Timeout: 10 * time.Second}
 
 func extractLinks(pageURL string) ([]string, error) {
-	resp, err := http.Get(pageURL)
+	baseURL, err := url.Parse(pageURL)
+	if err != nil {
+		return nil, err
+	}
+
+	resp, err := httpClient.Get(baseURL.String())
 	if err != nil {
 		return nil, err
 	}
 	defer resp.Body.Close()
 
-	body, err := io.ReadAll(resp.Body)
+	if resp.StatusCode < http.StatusOK || resp.StatusCode >= http.StatusMultipleChoices {
+		return nil, fmt.Errorf("unexpected status code: %s", resp.Status)
+	}
+
+	contentType := resp.Header.Get("Content-Type")
+	if !isHTMLContentType(contentType) {
+		return nil, fmt.Errorf("unexpected content type: %s", contentType)
+	}
+
+	doc, err := html.Parse(resp.Body)
 	if err != nil {
 		return nil, err
 	}
 
-	matches := linkRegex.FindAllStringSubmatch(string(body), -1)
-	links := make([]string, 0, len(matches))
+	baseURL = resolveBaseURL(doc, baseURL)
+
+	var links []string
 	seen := make(map[string]bool)
 
-	for _, m := range matches {
-		link := normalizeURL(m[1])
-		if link != "" && !seen[link] {
-			links = append(links, link)
-			seen[link] = true
+	walkHTML(doc, func(node *html.Node) {
+		if node.Type != html.ElementNode || node.Data != "a" {
+			return
 		}
-	}
+
+		href, ok := htmlAttr(node, "href")
+		if !ok {
+			return
+		}
+
+		link, ok := resolveLink(baseURL, href)
+		if !ok || seen[link] {
+			return
+		}
+
+		links = append(links, link)
+		seen[link] = true
+	})
 
 	return links, nil
+}
+
+func isHTMLContentType(contentType string) bool {
+	contentType = strings.TrimSpace(contentType)
+	if contentType == "" {
+		return true
+	}
+
+	mediaType, _, err := mime.ParseMediaType(contentType)
+	if err != nil {
+		return true
+	}
+
+	return mediaType == "text/html" || mediaType == "application/xhtml+xml"
+}
+
+func resolveBaseURL(doc *html.Node, pageURL *url.URL) *url.URL {
+	baseURL := pageURL
+	walkHTML(doc, func(node *html.Node) {
+		if baseURL != pageURL {
+			return
+		}
+		if node.Type != html.ElementNode || node.Data != "base" {
+			return
+		}
+
+		href, ok := htmlAttr(node, "href")
+		if !ok {
+			return
+		}
+
+		resolved, err := pageURL.Parse(href)
+		if err == nil {
+			baseURL = resolved
+		}
+	})
+	return baseURL
+}
+
+func walkHTML(node *html.Node, visit func(*html.Node)) {
+	if node == nil {
+		return
+	}
+
+	visit(node)
+	for child := node.FirstChild; child != nil; child = child.NextSibling {
+		walkHTML(child, visit)
+	}
+}
+
+func htmlAttr(node *html.Node, key string) (string, bool) {
+	for _, attr := range node.Attr {
+		if attr.Key == key {
+			return attr.Val, true
+		}
+	}
+	return "", false
+}
+
+func resolveLink(baseURL *url.URL, href string) (string, bool) {
+	href = strings.TrimSpace(href)
+	if href == "" {
+		return "", false
+	}
+
+	lowerHref := strings.ToLower(href)
+	switch {
+	case strings.HasPrefix(lowerHref, "#"),
+		strings.HasPrefix(lowerHref, "javascript:"),
+		strings.HasPrefix(lowerHref, "mailto:"),
+		strings.HasPrefix(lowerHref, "tel:"),
+		strings.HasPrefix(lowerHref, "data:"):
+		return "", false
+	case strings.HasPrefix(href, "//"):
+		href = baseURL.Scheme + ":" + href
+	}
+
+	refURL, err := url.Parse(href)
+	if err != nil {
+		return "", false
+	}
+
+	resolved := baseURL.ResolveReference(refURL)
+	if resolved.Scheme != "http" && resolved.Scheme != "https" {
+		return "", false
+	}
+
+	resolved.Fragment = ""
+	return normalizeURL(resolved.String()), true
 }
 
 type Media struct {
@@ -229,6 +349,10 @@ var startProcess = func(cmd string, args ...string) error {
 }
 
 func (o *OpenCmd) Run() error {
+	if o.DeleteRows && o.MarkDeleted {
+		return fmt.Errorf("--delete-rows and --mark-deleted cannot be used together")
+	}
+
 	db, err := initDB(o.DBPath)
 	if err != nil {
 		return err
@@ -273,13 +397,25 @@ func (o *OpenCmd) Run() error {
 	}
 
 	if len(filtered) == 0 {
-		fmt.Println("No links found")
+		fmt.Fprintln(stdout, "No links found")
+		return nil
+	}
+
+	if o.MarkDeleted {
+		deletedAt := time.Now().Unix()
+		for _, m := range filtered {
+			fmt.Fprintf(stdout, "Marking deleted: %s\n", m.Path)
+			_, err = db.Exec("UPDATE media SET time_deleted = ? WHERE id = ?", deletedAt, m.ID)
+			if err != nil {
+				log.Printf("Error marking row %d as deleted: %v", m.ID, err)
+			}
+		}
 		return nil
 	}
 
 	if o.DeleteRows {
 		for _, m := range filtered {
-			fmt.Printf("Deleting: %s\n", m.Path)
+			fmt.Fprintf(stdout, "Deleting: %s\n", m.Path)
 			_, _ = db.Exec("DELETE FROM history WHERE media_id = ?", m.ID)
 			_, err = db.Exec("DELETE FROM media WHERE id = ?", m.ID)
 			if err != nil {

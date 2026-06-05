@@ -97,13 +97,19 @@ Filter by category:
 
 ### Deleting Links
 
-Delete links matching a search term:
+Soft delete links matching a search term:
+
+```bash
+./links open --mark-deleted search_term
+```
+
+Hard delete links matching a search term:
 
 ```bash
 ./links open --delete-rows search_term
 ```
 
-Delete all links in a category:
+Hard delete all links in a category:
 
 ```bash
 ./links open --category tech --delete-rows --limit 1000
