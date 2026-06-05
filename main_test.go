@@ -1,7 +1,11 @@
 package main
 
 import (
+	"bytes"
+	"database/sql"
+	"path/filepath"
 	"reflect"
+	"runtime"
 	"testing"
 )
 
@@ -135,4 +139,198 @@ func TestFilterMaxSameDomain(t *testing.T) {
 			t.Errorf("Expected 3 links, got %d", len(result))
 		}
 	})
+}
+
+func TestBrowserCommand(t *testing.T) {
+	url := "https://example.com"
+
+	t.Run("Override", func(t *testing.T) {
+		cmd, args := browserCommand("firefox --new-window", url)
+		if cmd != "firefox" {
+			t.Fatalf("browserCommand override cmd = %q, want %q", cmd, "firefox")
+		}
+		expected := []string{"--new-window", url}
+		if !reflect.DeepEqual(args, expected) {
+			t.Fatalf("browserCommand override args = %v, want %v", args, expected)
+		}
+	})
+
+	t.Run("Default", func(t *testing.T) {
+		cmd, args := browserCommand("", url)
+		var expectedCmd string
+		switch runtime.GOOS {
+		case "windows":
+			expectedCmd = "rundll32"
+		case "darwin":
+			expectedCmd = "open"
+		default:
+			expectedCmd = "xdg-open"
+		}
+		if cmd != expectedCmd {
+			t.Fatalf("browserCommand default cmd = %q, want %q", cmd, expectedCmd)
+		}
+		expectedArgs := []string{url}
+		if runtime.GOOS == "windows" {
+			expectedArgs = []string{"url.dll,FileProtocolHandler", url}
+		}
+		if !reflect.DeepEqual(args, expectedArgs) {
+			t.Fatalf("browserCommand default args = %v, want %v", args, expectedArgs)
+		}
+	})
+}
+
+func TestOpenCmdRunNoBrowserMarksHistory(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "links.db")
+	db := mustInitDB(t, dbPath)
+	if err := addLink(db, "golang kong", ""); err != nil {
+		t.Fatalf("addLink() error = %v", err)
+	}
+	db.Close()
+
+	var output bytes.Buffer
+	oldStdout := stdout
+	stdout = &output
+	defer func() { stdout = oldStdout }()
+
+	oldStartProcess := startProcess
+	startProcess = func(cmd string, args ...string) error {
+		t.Fatalf("startProcess(%q, %v) should not have been called", cmd, args)
+		return nil
+	}
+	defer func() { startProcess = oldStartProcess }()
+
+	cmd := OpenCmd{
+		DBPath:    dbPath,
+		Limit:     1,
+		NoBrowser: true,
+		Prefix:    "https://duckduckgo.com/?q=",
+		Search:    []string{"golang"},
+	}
+	if err := cmd.Run(); err != nil {
+		t.Fatalf("OpenCmd.Run() error = %v", err)
+	}
+
+	expected := "https://duckduckgo.com/?q=golang+kong\n"
+	if output.String() != expected {
+		t.Fatalf("printed output = %q, want %q", output.String(), expected)
+	}
+
+	db = mustInitDB(t, dbPath)
+	defer db.Close()
+	if got := historyCount(t, db); got != 1 {
+		t.Fatalf("history count = %d, want 1", got)
+	}
+}
+
+func TestOpenCmdRunBrowserOverride(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "links.db")
+	db := mustInitDB(t, dbPath)
+	if err := addLink(db, "https://example.com", ""); err != nil {
+		t.Fatalf("addLink() error = %v", err)
+	}
+	db.Close()
+
+	var output bytes.Buffer
+	oldStdout := stdout
+	stdout = &output
+	defer func() { stdout = oldStdout }()
+
+	var gotCmd string
+	var gotArgs []string
+	oldStartProcess := startProcess
+	startProcess = func(cmd string, args ...string) error {
+		gotCmd = cmd
+		gotArgs = append([]string(nil), args...)
+		return nil
+	}
+	defer func() { startProcess = oldStartProcess }()
+
+	cmd := OpenCmd{
+		DBPath:  dbPath,
+		Limit:   1,
+		Browser: "firefox --new-window",
+		Search:  []string{"example"},
+	}
+	if err := cmd.Run(); err != nil {
+		t.Fatalf("OpenCmd.Run() error = %v", err)
+	}
+
+	if output.String() != "https://example.com\n" {
+		t.Fatalf("printed output = %q, want %q", output.String(), "https://example.com\n")
+	}
+	if gotCmd != "firefox" {
+		t.Fatalf("browser override cmd = %q, want %q", gotCmd, "firefox")
+	}
+	expectedArgs := []string{"--new-window", "https://example.com"}
+	if !reflect.DeepEqual(gotArgs, expectedArgs) {
+		t.Fatalf("browser override args = %v, want %v", gotArgs, expectedArgs)
+	}
+
+	db = mustInitDB(t, dbPath)
+	defer db.Close()
+	if got := historyCount(t, db); got != 1 {
+		t.Fatalf("history count = %d, want 1", got)
+	}
+}
+
+func TestOpenCmdRunNoMarkWatched(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "links.db")
+	db := mustInitDB(t, dbPath)
+	if err := addLink(db, "https://example.com", ""); err != nil {
+		t.Fatalf("addLink() error = %v", err)
+	}
+	db.Close()
+
+	var output bytes.Buffer
+	oldStdout := stdout
+	stdout = &output
+	defer func() { stdout = oldStdout }()
+
+	oldStartProcess := startProcess
+	startProcess = func(cmd string, args ...string) error {
+		t.Fatalf("startProcess(%q, %v) should not have been called", cmd, args)
+		return nil
+	}
+	defer func() { startProcess = oldStartProcess }()
+
+	cmd := OpenCmd{
+		DBPath:        dbPath,
+		Limit:         1,
+		NoBrowser:     true,
+		NoMarkWatched: true,
+		Search:        []string{"example"},
+	}
+	if err := cmd.Run(); err != nil {
+		t.Fatalf("OpenCmd.Run() error = %v", err)
+	}
+
+	if output.String() != "https://example.com\n" {
+		t.Fatalf("printed output = %q, want %q", output.String(), "https://example.com\n")
+	}
+
+	db = mustInitDB(t, dbPath)
+	defer db.Close()
+	if got := historyCount(t, db); got != 0 {
+		t.Fatalf("history count = %d, want 0", got)
+	}
+}
+
+func mustInitDB(t *testing.T, dbPath string) *sql.DB {
+	t.Helper()
+
+	db, err := initDB(dbPath)
+	if err != nil {
+		t.Fatalf("initDB() error = %v", err)
+	}
+	return db
+}
+
+func historyCount(t *testing.T, db *sql.DB) int {
+	t.Helper()
+
+	var count int
+	if err := db.QueryRow("SELECT COUNT(*) FROM history").Scan(&count); err != nil {
+		t.Fatalf("history count query error = %v", err)
+	}
+	return count
 }

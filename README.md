@@ -65,6 +65,21 @@ Open the most recent link matching a search term:
 ./links open google
 ```
 
+Only print the resolved links without opening them. This still marks them as seen:
+```bash
+./links open --no-browser google
+```
+
+Print links without opening or marking them as seen:
+```bash
+./links open --no-browser --no-mark-watched google
+```
+
+Use a specific browser command instead of the platform default:
+```bash
+./links open --browser 'firefox --new-window' google
+```
+
 Enable default regex sort:
 ```bash
 ./links open -R google

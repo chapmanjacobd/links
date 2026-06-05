@@ -39,6 +39,9 @@ type OpenCmd struct {
 	RegexSort     bool     `help:"Enable regex sort" short:"R"`
 	RegexPatterns []string `help:"Custom regex patterns" short:"r"`
 	DeleteRows    bool     `help:"Delete matching rows instead of opening them"`
+	Browser       string   `help:"Browser command override"`
+	NoBrowser     bool     `help:"Only print matching links; do not open them"`
+	NoMarkWatched bool     `help:"Do not mark printed or opened links as seen"`
 	Prefix        string   `help:"Prefix for non-URL paths" default:"https://duckduckgo.com/?q="`
 	Search        []string `arg:"" help:"Search terms" optional:""`
 }
@@ -219,6 +222,12 @@ type Media struct {
 	Category string
 }
 
+var stdout io.Writer = os.Stdout
+
+var startProcess = func(cmd string, args ...string) error {
+	return exec.Command(cmd, args...).Start()
+}
+
 func (o *OpenCmd) Run() error {
 	db, err := initDB(o.DBPath)
 	if err != nil {
@@ -281,15 +290,15 @@ func (o *OpenCmd) Run() error {
 	}
 
 	for _, m := range filtered {
-		urlToOpen := m.Path
-		if !strings.HasPrefix(m.Path, "http") {
-			urlToOpen = o.Prefix + url.QueryEscape(m.Path)
-		}
-		fmt.Printf("%s\n", urlToOpen)
-		if err := openBrowser(urlToOpen); err != nil {
+		urlToOpen := linkTarget(m.Path, o.Prefix)
+		fmt.Fprintln(stdout, urlToOpen)
+		if o.NoBrowser {
+		} else if err := openBrowser(urlToOpen, o.Browser); err != nil {
 			log.Printf("Error opening browser: %v", err)
 		}
-		_, _ = db.Exec("INSERT INTO history (media_id, time_played) VALUES (?, ?)", m.ID, time.Now().Unix())
+		if !o.NoMarkWatched {
+			_, _ = db.Exec("INSERT INTO history (media_id, time_played) VALUES (?, ?)", m.ID, time.Now().Unix())
+		}
 	}
 
 	return nil
@@ -431,7 +440,22 @@ func filterMedia(media []Media, search []string) []Media {
 	return filtered
 }
 
-func openBrowser(url string) error {
+func linkTarget(path, prefix string) string {
+	if !strings.HasPrefix(path, "http") {
+		return prefix + url.QueryEscape(path)
+	}
+	return path
+}
+
+func browserCommand(browser, url string) (string, []string) {
+	browser = strings.TrimSpace(browser)
+	if browser != "" {
+		fields := strings.Fields(browser)
+		if len(fields) > 0 {
+			return fields[0], append(fields[1:], url)
+		}
+	}
+
 	var cmd string
 	var args []string
 
@@ -446,7 +470,13 @@ func openBrowser(url string) error {
 		cmd = "xdg-open"
 		args = []string{url}
 	}
-	return exec.Command(cmd, args...).Start()
+
+	return cmd, args
+}
+
+func openBrowser(url, browser string) error {
+	cmd, args := browserCommand(browser, url)
+	return startProcess(cmd, args...)
 }
 
 func main() {
