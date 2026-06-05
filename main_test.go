@@ -290,6 +290,41 @@ func TestBrowserCommand(t *testing.T) {
 	})
 }
 
+func TestLinkTargets(t *testing.T) {
+	t.Run("UsesDefaultPrefix", func(t *testing.T) {
+		got := linkTargets("golang kong", nil)
+		want := []string{"https://duckduckgo.com/?q=golang+kong"}
+		if !reflect.DeepEqual(got, want) {
+			t.Fatalf("linkTargets() = %v, want %v", got, want)
+		}
+	})
+
+	t.Run("ExpandsMultiplePrefixesAndStripsPlaceholders", func(t *testing.T) {
+		got := linkTargets("golang kong", []string{
+			"https://duckduckgo.com/?q=%s",
+			"https://google.com/search?q=%",
+		})
+		want := []string{
+			"https://duckduckgo.com/?q=golang+kong",
+			"https://google.com/search?q=golang+kong",
+		}
+		if !reflect.DeepEqual(got, want) {
+			t.Fatalf("linkTargets() = %v, want %v", got, want)
+		}
+	})
+
+	t.Run("LeavesURLsUnchanged", func(t *testing.T) {
+		got := linkTargets("https://example.com", []string{
+			"https://duckduckgo.com/?q=",
+			"https://google.com/search?q=",
+		})
+		want := []string{"https://example.com"}
+		if !reflect.DeepEqual(got, want) {
+			t.Fatalf("linkTargets() = %v, want %v", got, want)
+		}
+	})
+}
+
 func TestOpenCmdRunNoBrowserMarksHistory(t *testing.T) {
 	dbPath := filepath.Join(t.TempDir(), "links.db")
 	db := mustInitDB(t, dbPath)
@@ -314,7 +349,6 @@ func TestOpenCmdRunNoBrowserMarksHistory(t *testing.T) {
 		DBPath:    dbPath,
 		Limit:     1,
 		NoBrowser: true,
-		Prefix:    "https://duckduckgo.com/?q=",
 		Search:    []string{"golang"},
 	}
 	if err := cmd.Run(); err != nil {
@@ -324,6 +358,77 @@ func TestOpenCmdRunNoBrowserMarksHistory(t *testing.T) {
 	expected := "https://duckduckgo.com/?q=golang+kong\n"
 	if output.String() != expected {
 		t.Fatalf("printed output = %q, want %q", output.String(), expected)
+	}
+
+	db = mustInitDB(t, dbPath)
+	defer db.Close()
+	if got := historyCount(t, db); got != 1 {
+		t.Fatalf("history count = %d, want 1", got)
+	}
+}
+
+func TestOpenCmdRunMultiplePrefixes(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "links.db")
+	db := mustInitDB(t, dbPath)
+	if err := addLink(db, "golang kong", ""); err != nil {
+		t.Fatalf("addLink() error = %v", err)
+	}
+	db.Close()
+
+	var output bytes.Buffer
+	oldStdout := stdout
+	stdout = &output
+	defer func() { stdout = oldStdout }()
+
+	var gotCalls [][]string
+	oldStartProcess := startProcess
+	startProcess = func(cmd string, args ...string) error {
+		call := append([]string{cmd}, args...)
+		gotCalls = append(gotCalls, call)
+		return nil
+	}
+	defer func() { startProcess = oldStartProcess }()
+
+	cmd := OpenCmd{
+		DBPath: dbPath,
+		Limit:  1,
+		Prefix: []string{
+			"https://duckduckgo.com/?q=%s",
+			"https://google.com/search?q=%",
+		},
+		Search: []string{"golang"},
+	}
+	if err := cmd.Run(); err != nil {
+		t.Fatalf("OpenCmd.Run() error = %v", err)
+	}
+
+	expectedOutput := "https://duckduckgo.com/?q=golang+kong\nhttps://google.com/search?q=golang+kong\n"
+	if output.String() != expectedOutput {
+		t.Fatalf("printed output = %q, want %q", output.String(), expectedOutput)
+	}
+
+	var expectedCmd string
+	switch runtime.GOOS {
+	case "windows":
+		expectedCmd = "rundll32"
+	case "darwin":
+		expectedCmd = "open"
+	default:
+		expectedCmd = "xdg-open"
+	}
+
+	expectedCalls := [][]string{
+		{expectedCmd, "https://duckduckgo.com/?q=golang+kong"},
+		{expectedCmd, "https://google.com/search?q=golang+kong"},
+	}
+	if runtime.GOOS == "windows" {
+		expectedCalls = [][]string{
+			{expectedCmd, "url.dll,FileProtocolHandler", "https://duckduckgo.com/?q=golang+kong"},
+			{expectedCmd, "url.dll,FileProtocolHandler", "https://google.com/search?q=golang+kong"},
+		}
+	}
+	if !reflect.DeepEqual(gotCalls, expectedCalls) {
+		t.Fatalf("startProcess calls = %v, want %v", gotCalls, expectedCalls)
 	}
 
 	db = mustInitDB(t, dbPath)

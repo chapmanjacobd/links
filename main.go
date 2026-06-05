@@ -36,7 +36,7 @@ type AddCmd struct {
 type OpenCmd struct {
 	DBPath        string   `help:"Database path" default:"links.db" type:"path" aliases:"db"`
 	Category      string   `help:"Filter by category" short:"c"`
-	Limit         int      `help:"Limit number of links to open" default:"1" short:"L"`
+	Limit         int      `help:"Limit number of matching rows to process" default:"1" short:"L"`
 	MaxSameDomain int      `help:"Limit to N tabs per domain" short:"m"`
 	RegexSort     bool     `help:"Enable regex sort" short:"R"`
 	RegexPatterns []string `help:"Custom regex patterns" short:"r"`
@@ -45,8 +45,9 @@ type OpenCmd struct {
 	Browser       string   `help:"Browser command override"`
 	NoBrowser     bool     `help:"Only print matching links; do not open them"`
 	NoMarkWatched bool     `help:"Do not mark printed or opened links as seen"`
-	Prefix        string   `help:"Prefix for non-URL paths" default:"https://duckduckgo.com/?q="`
-	Search        []string `arg:"" help:"Search terms" optional:""`
+	// Intentionally no kong default tag: slice defaults would be appended to user-provided values.
+	Prefix []string `help:"Prefix for non-URL paths; repeatable; defaults to https://duckduckgo.com/?q="`
+	Search []string `arg:"" help:"Search terms" optional:""`
 }
 
 var CLI struct {
@@ -344,6 +345,8 @@ type Media struct {
 
 var stdout io.Writer = os.Stdout
 
+const defaultPrefix = "https://duckduckgo.com/?q="
+
 var startProcess = func(cmd string, args ...string) error {
 	return exec.Command(cmd, args...).Start()
 }
@@ -426,11 +429,12 @@ func (o *OpenCmd) Run() error {
 	}
 
 	for _, m := range filtered {
-		urlToOpen := linkTarget(m.Path, o.Prefix)
-		fmt.Fprintln(stdout, urlToOpen)
-		if o.NoBrowser {
-		} else if err := openBrowser(urlToOpen, o.Browser); err != nil {
-			log.Printf("Error opening browser: %v", err)
+		for _, urlToOpen := range linkTargets(m.Path, o.Prefix) {
+			fmt.Fprintln(stdout, urlToOpen)
+			if o.NoBrowser {
+			} else if err := openBrowser(urlToOpen, o.Browser); err != nil {
+				log.Printf("Error opening browser: %v", err)
+			}
 		}
 		if !o.NoMarkWatched {
 			_, _ = db.Exec("INSERT INTO history (media_id, time_played) VALUES (?, ?)", m.ID, time.Now().Unix())
@@ -576,11 +580,31 @@ func filterMedia(media []Media, search []string) []Media {
 	return filtered
 }
 
-func linkTarget(path, prefix string) string {
-	if !strings.HasPrefix(path, "http") {
-		return prefix + url.QueryEscape(path)
+func normalizedPrefixes(prefixes []string) []string {
+	if len(prefixes) == 0 {
+		return []string{defaultPrefix}
 	}
-	return path
+
+	normalized := make([]string, 0, len(prefixes))
+	for _, prefix := range prefixes {
+		prefix = strings.TrimSpace(prefix)
+		prefix = strings.TrimSuffix(prefix, "%s")
+		prefix = strings.TrimSuffix(prefix, "%")
+		normalized = append(normalized, prefix)
+	}
+	return normalized
+}
+
+func linkTargets(path string, prefixes []string) []string {
+	if strings.HasPrefix(path, "http") {
+		return []string{path}
+	}
+
+	targets := make([]string, 0, len(prefixes))
+	for _, prefix := range normalizedPrefixes(prefixes) {
+		targets = append(targets, prefix+url.QueryEscape(path))
+	}
+	return targets
 }
 
 func browserCommand(browser, url string) (string, []string) {
