@@ -325,6 +325,29 @@ func TestLinkTargets(t *testing.T) {
 	})
 }
 
+func TestBrowserThrottleDelay(t *testing.T) {
+	tests := []struct {
+		name      string
+		tabNumber int
+		want      time.Duration
+	}{
+		{name: "FirstTab", tabNumber: 1, want: 0},
+		{name: "EarlyTabs", tabNumber: 2, want: 50 * time.Millisecond},
+		{name: "SixthTab", tabNumber: 6, want: 50 * time.Millisecond},
+		{name: "SeventhTab", tabNumber: 7, want: 500 * time.Millisecond},
+		{name: "TwentiethTab", tabNumber: 20, want: 500 * time.Millisecond},
+		{name: "TwentyFirstTab", tabNumber: 21, want: 800 * time.Millisecond},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := browserThrottleDelay(tt.tabNumber); got != tt.want {
+				t.Fatalf("browserThrottleDelay(%d) = %v, want %v", tt.tabNumber, got, tt.want)
+			}
+		})
+	}
+}
+
 func TestOpenCmdRunNoBrowserMarksHistory(t *testing.T) {
 	dbPath := filepath.Join(t.TempDir(), "links.db")
 	db := mustInitDB(t, dbPath)
@@ -344,6 +367,12 @@ func TestOpenCmdRunNoBrowserMarksHistory(t *testing.T) {
 		return nil
 	}
 	defer func() { startProcess = oldStartProcess }()
+
+	oldSleep := sleep
+	sleep = func(d time.Duration) {
+		t.Fatalf("sleep(%v) should not have been called", d)
+	}
+	defer func() { sleep = oldSleep }()
 
 	cmd := OpenCmd{
 		DBPath:    dbPath,
@@ -389,6 +418,13 @@ func TestOpenCmdRunMultiplePrefixes(t *testing.T) {
 	}
 	defer func() { startProcess = oldStartProcess }()
 
+	var gotSleeps []time.Duration
+	oldSleep := sleep
+	sleep = func(d time.Duration) {
+		gotSleeps = append(gotSleeps, d)
+	}
+	defer func() { sleep = oldSleep }()
+
 	cmd := OpenCmd{
 		DBPath: dbPath,
 		Limit:  1,
@@ -429,6 +465,9 @@ func TestOpenCmdRunMultiplePrefixes(t *testing.T) {
 	}
 	if !reflect.DeepEqual(gotCalls, expectedCalls) {
 		t.Fatalf("startProcess calls = %v, want %v", gotCalls, expectedCalls)
+	}
+	if !reflect.DeepEqual(gotSleeps, []time.Duration{50 * time.Millisecond}) {
+		t.Fatalf("sleep calls = %v, want %v", gotSleeps, []time.Duration{50 * time.Millisecond})
 	}
 
 	db = mustInitDB(t, dbPath)

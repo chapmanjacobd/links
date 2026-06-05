@@ -351,6 +351,8 @@ var startProcess = func(cmd string, args ...string) error {
 	return exec.Command(cmd, args...).Start()
 }
 
+var sleep = time.Sleep
+
 func (o *OpenCmd) Run() error {
 	if o.DeleteRows && o.MarkDeleted {
 		return fmt.Errorf("--delete-rows and --mark-deleted cannot be used together")
@@ -428,12 +430,19 @@ func (o *OpenCmd) Run() error {
 		return nil
 	}
 
+	tabsOpened := 0
 	for _, m := range filtered {
 		for _, urlToOpen := range linkTargets(m.Path, o.Prefix) {
 			fmt.Fprintln(stdout, urlToOpen)
 			if o.NoBrowser {
-			} else if err := openBrowser(urlToOpen, o.Browser); err != nil {
-				log.Printf("Error opening browser: %v", err)
+			} else {
+				tabsOpened++
+				if delay := browserThrottleDelay(tabsOpened); delay > 0 {
+					sleep(delay)
+				}
+				if err := openBrowser(urlToOpen, o.Browser); err != nil {
+					log.Printf("Error opening browser: %v", err)
+				}
 			}
 		}
 		if !o.NoMarkWatched {
@@ -593,6 +602,19 @@ func normalizedPrefixes(prefixes []string) []string {
 		normalized = append(normalized, prefix)
 	}
 	return normalized
+}
+
+func browserThrottleDelay(tabNumber int) time.Duration {
+	switch {
+	case tabNumber <= 1:
+		return 0
+	case tabNumber > 20:
+		return 800 * time.Millisecond
+	case tabNumber >= 7:
+		return 500 * time.Millisecond
+	default:
+		return 50 * time.Millisecond
+	}
 }
 
 func linkTargets(path string, prefixes []string) []string {
