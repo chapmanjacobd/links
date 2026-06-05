@@ -10,7 +10,7 @@ A Go-based port of `xklb` bookmarking and link-related tools.
 ## Installation
 
 ```bash
-go install github.com/chapmanjacobd/links
+go install -trimpath -ldflags="-s -w" github.com/chapmanjacobd/links
 ```
 
 or
@@ -19,6 +19,15 @@ or
 git clone https://github.com/chapmanjacobd/links/
 cd links
 make install
+```
+
+By default, `make build` and `make install` now produce a stripped binary to reduce size.
+
+If you want the smallest Linux build and are okay depending on the system SQLite library at
+runtime, you can also build with:
+
+```bash
+make BUILD_TAGS=libsqlite3 build
 ```
 
 ## Usage

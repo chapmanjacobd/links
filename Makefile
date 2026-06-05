@@ -1,11 +1,18 @@
 .PHONY: build test cover clean fmt lint install all
 
 BINARY_NAME=links
+BUILD_TAGS?=
+LDFLAGS?=-s -w
+GO_BUILD_FLAGS=-trimpath
+ifneq ($(strip $(BUILD_TAGS)),)
+GO_BUILD_FLAGS += -tags '$(BUILD_TAGS)'
+endif
+GO_BUILD_FLAGS += -ldflags '$(LDFLAGS)'
 
 all: fmt lint test build
 
 build:
-	go build  -o $(BINARY_NAME)
+	go build $(GO_BUILD_FLAGS) -o $(BINARY_NAME)
 
 test:
 	go test ./...
@@ -30,4 +37,4 @@ clean:
 	rm -f coverage.out
 
 install:
-	go install .
+	go install $(GO_BUILD_FLAGS) .
