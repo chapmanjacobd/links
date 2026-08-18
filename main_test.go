@@ -570,6 +570,124 @@ func TestOpenCmdRunNoMarkWatched(t *testing.T) {
 	}
 }
 
+func TestOpenCmdRunAll(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "links.db")
+	db := mustInitDB(t, dbPath)
+	for _, p := range []string{"golang kong", "golang docs", "rust book"} {
+		if err := addLink(db, p, ""); err != nil {
+			t.Fatalf("addLink() error = %v", err)
+		}
+	}
+	db.Close()
+
+	var output bytes.Buffer
+	oldStdout := stdout
+	stdout = &output
+	defer func() { stdout = oldStdout }()
+
+	oldStartProcess := startProcess
+	startProcess = func(cmd string, args ...string) error {
+		t.Fatalf("startProcess(%q, %v) should not have been called", cmd, args)
+		return nil
+	}
+	defer func() { startProcess = oldStartProcess }()
+
+	cmd := OpenCmd{
+		DBPath: dbPath,
+		All:    true,
+		Search: []string{"golang"},
+	}
+	if err := cmd.Run(); err != nil {
+		t.Fatalf("OpenCmd.Run() error = %v", err)
+	}
+
+	if output.String() != "2\n" {
+		t.Fatalf("printed output = %q, want %q", output.String(), "2\n")
+	}
+
+	db = mustInitDB(t, dbPath)
+	defer db.Close()
+	if got := historyCount(t, db); got != 0 {
+		t.Fatalf("history count = %d, want 0", got)
+	}
+}
+
+func TestOpenCmdRunAllNoMatches(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "links.db")
+	db := mustInitDB(t, dbPath)
+	if err := addLink(db, "golang kong", ""); err != nil {
+		t.Fatalf("addLink() error = %v", err)
+	}
+	db.Close()
+
+	var output bytes.Buffer
+	oldStdout := stdout
+	stdout = &output
+	defer func() { stdout = oldStdout }()
+
+	cmd := OpenCmd{
+		DBPath: dbPath,
+		All:    true,
+		Search: []string{"nothing-matches"},
+	}
+	if err := cmd.Run(); err != nil {
+		t.Fatalf("OpenCmd.Run() error = %v", err)
+	}
+
+	if output.String() != "0\n" {
+		t.Fatalf("printed output = %q, want %q", output.String(), "0\n")
+	}
+}
+
+func TestOpenCmdRunAllCountsBeforeLimit(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "links.db")
+	db := mustInitDB(t, dbPath)
+	for _, p := range []string{"golang kong", "golang docs", "golang faq"} {
+		if err := addLink(db, p, ""); err != nil {
+			t.Fatalf("addLink() error = %v", err)
+		}
+	}
+	db.Close()
+
+	var output bytes.Buffer
+	oldStdout := stdout
+	stdout = &output
+	defer func() { stdout = oldStdout }()
+
+	cmd := OpenCmd{
+		DBPath: dbPath,
+		All:    true,
+		Limit:  1,
+		Search: []string{"golang"},
+	}
+	if err := cmd.Run(); err != nil {
+		t.Fatalf("OpenCmd.Run() error = %v", err)
+	}
+
+	if output.String() != "3\n" {
+		t.Fatalf("printed output = %q, want %q", output.String(), "3\n")
+	}
+}
+
+func TestOpenCmdRunAllConflicts(t *testing.T) {
+	cmd := OpenCmd{
+		All:         true,
+		DeleteRows:  true,
+		MarkDeleted: true,
+	}
+
+	err := cmd.Run()
+	if err == nil || err.Error() != "--delete-rows and --mark-deleted cannot be used together" {
+		t.Fatalf("OpenCmd.Run() error = %v, want %q", err, "--delete-rows and --mark-deleted cannot be used together")
+	}
+
+	cmd = OpenCmd{All: true, DeleteRows: true}
+	err = cmd.Run()
+	if err == nil || err.Error() != "--all cannot be used with --delete-rows or --mark-deleted" {
+		t.Fatalf("OpenCmd.Run() error = %v, want %q", err, "--all cannot be used with --delete-rows or --mark-deleted")
+	}
+}
+
 func TestOpenCmdRunDeleteModesConflict(t *testing.T) {
 	cmd := OpenCmd{
 		DeleteRows:  true,

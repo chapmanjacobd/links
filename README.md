@@ -70,6 +70,11 @@ Only print the resolved links without opening them. This still marks them as see
 ./links open --no-browser google
 ```
 
+Print the total count of matching rows without opening or modifying anything (read-only):
+```bash
+./links open --all google
+```
+
 Print links without opening or marking them as seen:
 ```bash
 ./links open --no-browser --no-mark-watched google

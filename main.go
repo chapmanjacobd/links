@@ -40,6 +40,7 @@ type OpenCmd struct {
 	MaxSameDomain int      `help:"Limit to N tabs per domain" short:"m"`
 	RegexSort     bool     `help:"Enable regex sort" short:"R"`
 	RegexPatterns []string `help:"Custom regex patterns" short:"r"`
+	All           bool     `help:"Print the total count of matching rows instead of opening links" short:"a"`
 	DeleteRows    bool     `help:"Hard delete matching rows instead of opening them"`
 	MarkDeleted   bool     `help:"Soft delete matching rows instead of opening them"`
 	Browser       string   `help:"Browser command override"`
@@ -357,6 +358,9 @@ func (o *OpenCmd) Run() error {
 	if o.DeleteRows && o.MarkDeleted {
 		return fmt.Errorf("--delete-rows and --mark-deleted cannot be used together")
 	}
+	if o.All && (o.DeleteRows || o.MarkDeleted) {
+		return fmt.Errorf("--all cannot be used with --delete-rows or --mark-deleted")
+	}
 
 	db, err := initDB(o.DBPath)
 	if err != nil {
@@ -395,6 +399,11 @@ func (o *OpenCmd) Run() error {
 
 	if o.MaxSameDomain > 0 {
 		filtered = filterMaxSameDomain(filtered, o.MaxSameDomain)
+	}
+
+	if o.All {
+		fmt.Fprintln(stdout, len(filtered))
+		return nil
 	}
 
 	if len(filtered) > o.Limit {
