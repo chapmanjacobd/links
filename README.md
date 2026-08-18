@@ -95,6 +95,10 @@ Open multiple links:
 ./links open -L 5 tech
 ```
 
+When opening links, the command waits at least 2 seconds between URLs with the
+same top-level domain and 200 milliseconds between URLs with different
+top-level domains.
+
 Filter by category:
 ```bash
 ./links open -c tech

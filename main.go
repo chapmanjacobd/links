@@ -6,6 +6,7 @@ import (
 	"io"
 	"log"
 	"mime"
+	"net"
 	"net/http"
 	"net/url"
 	"os"
@@ -354,6 +355,69 @@ var startProcess = func(cmd string, args ...string) error {
 
 var sleep = time.Sleep
 
+const (
+	sameTLDDelay  = 2 * time.Second
+	otherURLDelay = 200 * time.Millisecond
+)
+
+type browserThrottler struct {
+	lastURLAt time.Time
+	lastTLDAt map[string]time.Time
+}
+
+func newBrowserThrottler() *browserThrottler {
+	return &browserThrottler{lastTLDAt: make(map[string]time.Time)}
+}
+
+func (t *browserThrottler) wait(target string) {
+	now := time.Now()
+	if delay := t.delay(target, now); delay > 0 {
+		sleep(delay)
+	}
+
+	openedAt := time.Now()
+	t.lastURLAt = openedAt
+	if tld := topLevelDomain(target); tld != "" {
+		t.lastTLDAt[tld] = openedAt
+	}
+}
+
+func (t *browserThrottler) delay(target string, now time.Time) time.Duration {
+	delay := time.Duration(0)
+	if !t.lastURLAt.IsZero() {
+		delay = maxDelay(delay, otherURLDelay-now.Sub(t.lastURLAt))
+	}
+	if lastTLDAt, ok := t.lastTLDAt[topLevelDomain(target)]; ok {
+		delay = maxDelay(delay, sameTLDDelay-now.Sub(lastTLDAt))
+	}
+	return delay
+}
+
+func maxDelay(current, candidate time.Duration) time.Duration {
+	if candidate > current {
+		return candidate
+	}
+	return current
+}
+
+func topLevelDomain(rawURL string) string {
+	parsed, err := url.Parse(rawURL)
+	if err != nil {
+		return ""
+	}
+
+	host := strings.ToLower(strings.TrimSuffix(parsed.Hostname(), "."))
+	if host == "" {
+		return ""
+	}
+	if net.ParseIP(host) != nil {
+		return host
+	}
+
+	labels := strings.Split(host, ".")
+	return labels[len(labels)-1]
+}
+
 func (o *OpenCmd) Run() error {
 	if o.DeleteRows && o.MarkDeleted {
 		return fmt.Errorf("--delete-rows and --mark-deleted cannot be used together")
@@ -439,16 +503,13 @@ func (o *OpenCmd) Run() error {
 		return nil
 	}
 
-	tabsOpened := 0
+	throttler := newBrowserThrottler()
 	for _, m := range filtered {
 		for _, urlToOpen := range linkTargets(m.Path, o.Prefix) {
 			fmt.Fprintln(stdout, urlToOpen)
 			if o.NoBrowser {
 			} else {
-				tabsOpened++
-				if delay := browserThrottleDelay(tabsOpened); delay > 0 {
-					sleep(delay)
-				}
+				throttler.wait(urlToOpen)
 				if err := openBrowser(urlToOpen, o.Browser); err != nil {
 					log.Printf("Error opening browser: %v", err)
 				}
@@ -611,19 +672,6 @@ func normalizedPrefixes(prefixes []string) []string {
 		normalized = append(normalized, prefix)
 	}
 	return normalized
-}
-
-func browserThrottleDelay(tabNumber int) time.Duration {
-	switch {
-	case tabNumber <= 1:
-		return 0
-	case tabNumber > 20:
-		return 800 * time.Millisecond
-	case tabNumber >= 7:
-		return 500 * time.Millisecond
-	default:
-		return 50 * time.Millisecond
-	}
 }
 
 func linkTargets(path string, prefixes []string) []string {

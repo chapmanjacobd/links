@@ -325,24 +325,64 @@ func TestLinkTargets(t *testing.T) {
 	})
 }
 
-func TestBrowserThrottleDelay(t *testing.T) {
+func TestTopLevelDomain(t *testing.T) {
 	tests := []struct {
-		name      string
-		tabNumber int
-		want      time.Duration
+		name string
+		url  string
+		want string
 	}{
-		{name: "FirstTab", tabNumber: 1, want: 0},
-		{name: "EarlyTabs", tabNumber: 2, want: 50 * time.Millisecond},
-		{name: "SixthTab", tabNumber: 6, want: 50 * time.Millisecond},
-		{name: "SeventhTab", tabNumber: 7, want: 500 * time.Millisecond},
-		{name: "TwentiethTab", tabNumber: 20, want: 500 * time.Millisecond},
-		{name: "TwentyFirstTab", tabNumber: 21, want: 800 * time.Millisecond},
+		{name: "ExtractsTLD", url: "https://www.example.com/path", want: "com"},
+		{name: "NormalizesCaseAndTrailingDot", url: "https://example.ORG./path", want: "org"},
+		{name: "UsesIPAsItsOwnGroup", url: "http://192.0.2.1/path", want: "192.0.2.1"},
+		{name: "RejectsInvalidURL", url: "://bad url", want: ""},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			if got := browserThrottleDelay(tt.tabNumber); got != tt.want {
-				t.Fatalf("browserThrottleDelay(%d) = %v, want %v", tt.tabNumber, got, tt.want)
+			if got := topLevelDomain(tt.url); got != tt.want {
+				t.Fatalf("topLevelDomain(%q) = %q, want %q", tt.url, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestBrowserThrottlerDelay(t *testing.T) {
+	throttler := newBrowserThrottler()
+	start := time.Date(2026, time.January, 1, 0, 0, 0, 0, time.UTC)
+
+	throttler.lastURLAt = start
+	throttler.lastTLDAt["com"] = start
+
+	tests := []struct {
+		name string
+		url  string
+		now  time.Time
+		want time.Duration
+	}{
+		{
+			name: "SameTLDUsesLongDelay",
+			url:  "https://other.example.com",
+			now:  start.Add(1 * time.Second),
+			want: 1 * time.Second,
+		},
+		{
+			name: "DifferentTLDUsesShortDelay",
+			url:  "https://example.org",
+			now:  start.Add(1 * time.Second),
+			want: 0,
+		},
+		{
+			name: "DifferentTLDStillNeedsGlobalSpacing",
+			url:  "https://example.org",
+			now:  start.Add(100 * time.Millisecond),
+			want: 100 * time.Millisecond,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := throttler.delay(tt.url, tt.now); got != tt.want {
+				t.Fatalf("browserThrottler.delay(%q, %v) = %v, want %v", tt.url, tt.now, got, tt.want)
 			}
 		})
 	}
@@ -466,8 +506,8 @@ func TestOpenCmdRunMultiplePrefixes(t *testing.T) {
 	if !reflect.DeepEqual(gotCalls, expectedCalls) {
 		t.Fatalf("startProcess calls = %v, want %v", gotCalls, expectedCalls)
 	}
-	if !reflect.DeepEqual(gotSleeps, []time.Duration{50 * time.Millisecond}) {
-		t.Fatalf("sleep calls = %v, want %v", gotSleeps, []time.Duration{50 * time.Millisecond})
+	if len(gotSleeps) != 1 || gotSleeps[0] <= 0 || gotSleeps[0] > sameTLDDelay {
+		t.Fatalf("sleep calls = %v, want one delay no longer than %v", gotSleeps, sameTLDDelay)
 	}
 
 	db = mustInitDB(t, dbPath)
